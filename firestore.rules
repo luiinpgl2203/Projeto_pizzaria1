@@ -1,0 +1,159 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // 0. Global Safety Net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- Helpers ---
+    function isSignedIn() { return request.auth != null; }
+    function isValidId(id) { return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$'); }
+    function incoming() { return request.resource.data; }
+    function existing() { return resource.data; }
+    
+    // User Context
+    function userDoc() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+    function belongsToPizzeria(pId) {
+      return isSignedIn() && userDoc().pizzeriaId == pId;
+    }
+    function isAdmin(pId) {
+      return belongsToPizzeria(pId) && userDoc().role == 'Admin';
+    }
+    function isManager(pId) {
+      return belongsToPizzeria(pId) && userDoc().role in ['Admin', 'Gerente'];
+    }
+
+    // --- Validation Blueprints ---
+    
+    function isValidUser(data) {
+      return data.keys().hasAll(['name', 'username', 'role', 'pizzeriaId']) &&
+             data.keys().size() >= 4 &&
+             data.name is string && data.name.size() <= 100 &&
+             data.username is string && data.username.size() <= 50 &&
+             data.role in ['Admin', 'Garçom', 'Cozinha', 'Caixa', 'Motoboy', 'Gerente'] &&
+             isValidId(data.pizzeriaId);
+    }
+
+    function isValidIngredient(data) {
+      return data.keys().hasAll(['id', 'name', 'stock', 'unit', 'minStock']) &&
+             data.name is string && data.name.size() <= 100 &&
+             data.stock is number &&
+             data.unit in ['kg', 'g', 'L', 'ml', 'un'] &&
+             data.minStock is number;
+    }
+
+    function isValidOrder(data) {
+      return data.keys().hasAll(['id', 'customerName', 'date', 'total', 'status', 'orderType', 'pizzeriaId']) &&
+             data.id is string && data.id.size() <= 128 &&
+             data.customerName is string && data.customerName.size() <= 200 &&
+             data.total is number && data.total >= 0 &&
+             data.status in ["Pendente", "Em Preparo", "Pronto para Entrega", "Saiu para Entrega", "Concluído", "Cancelado"] &&
+             data.orderType in ["Mesa", "Balcão", "Entrega"] &&
+             isValidId(data.pizzeriaId);
+    }
+
+    // --- Collections ---
+
+    // Global User Profiles (Mapped by Auth UID)
+    match /users/{userId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn() && isValidUser(incoming()) && request.auth.uid == userId;
+      allow update: if isSignedIn() && (
+        // Self-update limited fields
+        (request.auth.uid == userId && incoming().diff(existing()).affectedKeys().hasOnly(['name', 'password'])) ||
+        // Admin update anything
+        (userDoc().role == 'Admin' && isValidUser(incoming()))
+      );
+    }
+
+    // Multi-tenant Pizzeria Data
+    match /pizzerias/{pizzeriaId} {
+      allow read: if belongsToPizzeria(pizzeriaId);
+      
+      // Basic Info
+      allow update: if isManager(pizzeriaId) && incoming().diff(existing()).affectedKeys().hasOnly(['name']);
+
+      // Ingredients
+      match /ingredients/{ingredientId} {
+        allow read: if belongsToPizzeria(pizzeriaId);
+        allow create: if isManager(pizzeriaId) && isValidId(ingredientId) && isValidIngredient(incoming());
+        allow update: if isManager(pizzeriaId) && isValidIngredient(incoming()) && (
+          // Action: Stock Sync
+          incoming().diff(existing()).affectedKeys().hasOnly(['stock']) ||
+          // Action: Price update
+          incoming().diff(existing()).affectedKeys().hasOnly(['costPerUnit', 'minStock', 'yieldFactor']) ||
+          // Master override
+          isAdmin(pizzeriaId)
+        );
+        allow delete: if isAdmin(pizzeriaId);
+      }
+
+      // Products (Menu Items)
+      match /products/{productId} {
+        allow read: if belongsToPizzeria(pizzeriaId);
+        allow create: if isManager(pizzeriaId) && isValidId(productId);
+        allow update: if isManager(pizzeriaId) && incoming().diff(existing()).affectedKeys().hasOnly(['name', 'price', 'category', 'sku']);
+        allow delete: if isAdmin(pizzeriaId);
+      }
+
+      // Orders
+      match /orders/{orderId} {
+        allow read: if belongsToPizzeria(pizzeriaId);
+        // List query enforcement (Pillar 8)
+        allow list: if belongsToPizzeria(pizzeriaId) && resource.data.pizzeriaId == pizzeriaId;
+        
+        allow create: if belongsToPizzeria(pizzeriaId) && isValidOrder(incoming()) && incoming().pizzeriaId == pizzeriaId;
+        
+        allow update: if belongsToPizzeria(pizzeriaId) && isValidOrder(incoming()) && (
+          // Terminal State Locking (Pillar 9)
+          (existing().status != 'Concluído' && existing().status != 'Cancelado') || isAdmin(pizzeriaId)
+        ) && (
+          // Action: Status change
+          incoming().diff(existing()).affectedKeys().hasOnly(['status']) ||
+          // Action: Add items (only before preparation)
+          (existing().status == 'Pendente' && incoming().diff(existing()).affectedKeys().hasOnly(['items', 'total', 'observation'])) ||
+          // Action: Payment / Close
+          (incoming().status == 'Concluído' && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'paymentMethod', 'changeFor'])) ||
+          // Admin override
+          isAdmin(pizzeriaId)
+        );
+        
+        allow delete: if isAdmin(pizzeriaId);
+      }
+
+      // Recipes
+      match /recipes/{productId} {
+        allow read: if belongsToPizzeria(pizzeriaId);
+        allow write: if isManager(pizzeriaId) && isValidId(productId);
+      }
+
+      // Employees (Tenant specific users)
+      match /employees/{empId} {
+        allow read: if belongsToPizzeria(pizzeriaId);
+        allow write: if isManager(pizzeriaId) && isValidId(empId);
+      }
+
+      // Stock Movements (Audit Log)
+      match /stock_movements/{movementId} {
+        allow read: if belongsToPizzeria(pizzeriaId);
+        allow create: if belongsToPizzeria(pizzeriaId) && isValidId(movementId) && incoming().timestamp == request.time;
+        allow update, delete: if false; // Immutable audit log
+      }
+
+      // Cash Closings
+      match /cash_closings/{closingId} {
+        allow read: if isManager(pizzeriaId);
+        allow create: if isManager(pizzeriaId) && isValidId(closingId);
+      }
+
+      // Clients
+      match /clients/{clientId} {
+        allow read: if belongsToPizzeria(pizzeriaId);
+        allow write: if belongsToPizzeria(pizzeriaId);
+      }
+    }
+  }
+}

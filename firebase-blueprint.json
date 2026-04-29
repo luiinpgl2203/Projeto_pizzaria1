@@ -1,0 +1,91 @@
+{
+  "entities": {
+    "User": {
+      "title": "User Profile",
+      "description": "User account information and pizzeria association",
+      "type": "object",
+      "properties": {
+        "id": { "type": "number" },
+        "name": { "type": "string" },
+        "username": { "type": "string" },
+        "role": { "enum": ["Admin", "Garçom", "Cozinha", "Caixa", "Motoboy", "Gerente"] },
+        "employmentStatus": { "type": "string" },
+        "pizzeriaId": { "type": "string" },
+        "password": { "type": "string" }
+      },
+      "required": ["name", "username", "role", "pizzeriaId"]
+    },
+    "Ingredient": {
+      "title": "Ingredient",
+      "description": "Raw material used in recipes",
+      "type": "object",
+      "properties": {
+        "id": { "type": "number" },
+        "name": { "type": "string" },
+        "stock": { "type": "number" },
+        "unit": { "enum": ["kg", "g", "L", "ml", "un"] },
+        "minStock": { "type": "number" },
+        "costPerUnit": { "type": "number" },
+        "category": { "type": "string" },
+        "yieldFactor": { "type": "number" },
+        "pizzeriaId": { "type": "string" }
+      }
+    },
+    "Product": {
+      "title": "Product",
+      "description": "Finished product sold to customers",
+      "type": "object",
+      "properties": {
+        "id": { "type": "number" },
+        "name": { "type": "string" },
+        "category": { "type": "string" },
+        "price": { "type": "number" },
+        "sku": { "type": "string" },
+        "pizzeriaId": { "type": "string" }
+      }
+    },
+    "Order": {
+      "title": "Order",
+      "description": "Customer order record",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "customerName": { "type": "string" },
+        "date": { "type": "string", "format": "date-time" },
+        "total": { "type": "number" },
+        "status": { "enum": ["Pendente", "Em Preparo", "Pronto para Entrega", "Saiu para Entrega", "Concluído", "Cancelado"] },
+        "paymentMethod": { "type": "string" },
+        "orderType": { "enum": ["Mesa", "Balcão", "Entrega"] },
+        "observation": { "type": "string" },
+        "pizzeriaId": { "type": "string" }
+      }
+    }
+  },
+  "firestore": {
+    "/users/{uid}": {
+      "schema": "User",
+      "description": "Individual user profiles mapped by UID"
+    },
+    "/pizzerias/{pizzeriaId}": {
+      "schema": {
+        "type": "object",
+        "properties": {
+          "name": { "type": "string" }
+        }
+      },
+      "description": "General pizzeria information"
+    },
+    "/pizzerias/{pizzeriaId}/ingredients/{ingredientId}": {
+      "schema": "Ingredient",
+      "description": "Ingredients for a specific pizzeria"
+    },
+    "/pizzerias/{pizzeriaId}/products/{productId}": {
+      "schema": "Product",
+      "description": "Menu products"
+    },
+    "/pizzerias/{pizzeriaId}/orders/{orderId}": {
+      "schema": "Order",
+      "description": "Sales history and active orders"
+    }
+  }
+}
